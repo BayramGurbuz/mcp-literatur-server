@@ -1,6 +1,6 @@
+import os
 import re
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
 import chromadb
 import httpx
@@ -14,9 +14,6 @@ mcp = MCPServer("literatur-server")
 client = genai.Client()
 
 BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
-# Faz 2'deki RAG pipeline'ının kullandığı aynı kalıcı Chroma koleksiyonu — index_paper
-# buraya yazarak iki fazı gerçekten birleştiriyor (ayrı bir Faz 3 veritabanı değil).
-CHROMA_DB_PATH = Path(__file__).resolve().parents[2] / "Faz 2" / "rag-literature-assistant" / "chroma_db"
 COLLECTION_NAME = "bci_abstracts"
 METADATA_FIELDS = ("pmid", "title", "journal", "year", "first_author")
 
@@ -140,11 +137,17 @@ def _chunk_sentences(title: str, abstract: str, max_chars: int = 800) -> list[st
     return [f"{title}\n\n{g}" for g in groups]
 
 
-def _get_collection() -> chromadb.Collection:
-    """Faz 2'nin Chroma koleksiyonunu tembel açar (server başlarken değil, ilk kullanımda)."""
+def _get_collection() -> chromadb.Collection | None:
+    """Faz 2'nin Chroma koleksiyonunu tembel açar. RAG_CHROMA_DB_PATH ayarlı
+    değilse ya da yoldaki klasöre erişilemiyorsa None döner — indeksleme
+    özelliği bu ortamda sessizce kapanır (örn. production'da paylaşılan
+    disk yok, her servis kendi container'ında)."""
     global _collection
     if _collection is None:
-        chroma_client = chromadb.PersistentClient(path=str(CHROMA_DB_PATH))
+        db_path = os.getenv("RAG_CHROMA_DB_PATH")
+        if not db_path or not os.path.isdir(db_path):
+            return None
+        chroma_client = chromadb.PersistentClient(path=db_path)
         _collection = chroma_client.get_or_create_collection(name=COLLECTION_NAME)
     return _collection
 
@@ -160,6 +163,10 @@ def index_paper(pmid: str) -> str:
     Args:
         pmid: PubMed makale ID'si, örn. "42747938"
     """
+    collection = _get_collection()
+    if collection is None:
+        return "İndeksleme bu ortamda yapılandırılmamış (RAG_CHROMA_DB_PATH ayarlı değil)."
+
     paper = _fetch_paper(pmid)
     if paper is None:
         return f"PMID {pmid} indekslenemedi: abstract bulunamadı ya da PubMed isteği başarısız oldu."
@@ -178,7 +185,7 @@ def index_paper(pmid: str) -> str:
     ids = [f"{paper['pmid']}_{i}" for i in range(len(chunks))]
     metadatas = [{k: paper[k] for k in METADATA_FIELDS} for _ in chunks]
     # add yerine upsert: aynı PMID tekrar indekslenirse hata vermesin
-    _get_collection().upsert(ids=ids, embeddings=embeddings, documents=chunks, metadatas=metadatas)
+    collection.upsert(ids=ids, embeddings=embeddings, documents=chunks, metadatas=metadatas)
     return f"PMID {pmid} ({paper['title']}) {len(chunks)} chunk olarak '{COLLECTION_NAME}' koleksiyonuna indekslendi."
 
 
