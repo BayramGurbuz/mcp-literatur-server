@@ -2,7 +2,7 @@
 
 **Proje:** Faz 3'teki MCP agent'ını (`agent_client.py` + `paper_server.py`) FastAPI ile HTTP API'ye sarma, Docker ile konteynerleştirme, GitHub Actions ile CI kurma ve Render'a canlı deploy etme.
 **Klasör:** `mcp-literatur-server/` (kendi başına bir repo — bkz. [rag-literature-assistant/FAZ4_RAPOR.md](https://github.com/BayramGurbuz/rag-literature-assistant/blob/main/FAZ4_RAPOR.md) Bölüm 0)
-**Canlı URL:** https://mcp-literatur-server.onrender.com (`/docs`, `/health`, `/ask`)
+**Canlı URL:** https://mcp-literatur-server.onrender.com (`/` agent trace arayüzü, `/docs`, `/health`, `/ask`)
 **CI:** GitHub Actions, her push/PR'da `pytest`
 
 ---
@@ -92,16 +92,17 @@ Canlı URL'e `index_paper`'ı tetikleyecek bir soru ("PMID X'i indeksle") soruld
 | `.github/workflows/ci.yml` | Push/PR'da `uv sync` + `pytest` |
 | `agent_client.py` (değişti) | `genai.Client()` tembelleştirildi; `StdioServerParameters`'a `env=` eklendi (Bölüm 9'da `RAG_API_URL`/`INDEX_API_KEY`'e güncellendi) |
 | `agent_basics.py` (değişti) | `genai.Client()` tembelleştirildi (CI'ı kıran unutulmuş satır) |
-| `tests/test_api.py` | `AsyncMock` ile `/ask`, `/health`, 422 testleri |
+| `tests/test_api.py` | `AsyncMock` ile `/ask`, `/health`, 422, ana sayfa testleri |
 | `paper_server.py` (Bölüm 9'da değişti) | `index_paper`, Chroma/embedding yerine `rag-literature-assistant`'ın `/index`'ini HTTP ile çağırıyor; `chromadb`/embedding kodu tamamen kalktı |
+| `static/index.html` (Bölüm 10) | Agent trace arayüzü: her tool çağrısını (isim, argüman, sonuç) adım adım, sonra final cevabı gösterir |
 
 **Çalıştırma**
 ```bash
 uv sync
-uv run python agent_client.py     # terminal demo
-uv run uvicorn api:app --port 8000   # HTTP API (reload'suz!)
+uv run python agent_client.py     # terminal demo (trace de basar)
+uv run uvicorn api:app --port 8000   # HTTP API + arayüz, http://127.0.0.1:8000/ (reload'suz!)
 docker build -t mcp-api . && docker run -p 8000:8000 --env-file .env mcp-api
-uv run pytest -v                  # 5 test
+uv run pytest -v                  # 6 test
 ```
 
 ---
@@ -112,6 +113,8 @@ uv run pytest -v                  # 5 test
 2. **Kalıcı MCP bağlantısı:** Her `/ask` isteğinde yeni bir `stdio_client`/subprocess açmak yerine, uygulama başlarken tek bir `ClientSession` açıp isteğe göre yeniden kullanmak (subprocess başlatma maliyetini ortadan kaldırır).
 3. ~~HTTP tabanlı `/index` entegrasyonu~~ — **yapıldı, bkz. Bölüm 9.**
 4. **Kalıcılık:** rag-literature-assistant kalıcı bir vector DB'ye geçerse, `index_paper` ile eklenen makaleler de artık cold start'ta kaybolmaz (bkz. Bölüm 6).
+5. ~~Agent'ın tool çağırma adımlarını görünür kılmak~~ — **yapıldı, bkz. Bölüm 10.**
+6. **Kota hatalarını ayırt etmek:** rag-literature-assistant/FAZ4_RAPOR.md Bölüm 7'deki öneriyle aynı — 402/429 gibi Gemini hatalarını genel 500'den ayırıp anlamlı bir mesajla dönmek (bkz. Bölüm 10.3).
 
 ---
 
@@ -127,3 +130,30 @@ uv run pytest -v                  # 5 test
 1. Yerelde: `.env` tamamen kaldırılıp (yalnızca `os.environ`'dan silmek değil) sadece gerçek ortam değişkenleriyle test edildi — subprocess'e geçiş doğru çalıştı.
 2. Docker'da: `mcp-api` container'ı, host'taki `rag-literature-assistant` sürecine `host.docker.internal` ile erişti; zaten koleksiyonda olan bir PMID'yi (42747938) yeniden indeksledi — `upsert` idempotent kaldığı için chunk sayısı değişmedi (82).
 3. Canlıda: `mcp-literatur-server`'a "PMID 37875091'i indeksle" dendi → gerçek `POST /index` gitti (17sn, 200) → hemen ardından `rag-literature-assistant`'a o makalenin konusuyla ilgili bir soru soruldu → daha önce koleksiyonda hiç olmayan bu konuda doğru kaynakla cevap geldi. `INDEX_API_KEY` korumasız direkt istek → 401.
+
+---
+
+## 10. Ek — Agent trace arayüzü, model değişikliği ve bir gerçek kesinti
+
+### 10.1 Sadece final cevap değil, agent'ın ne yaptığı da görünür (`GET /`)
+
+RAG projesinden farklı olarak buradaki asıl değer, agent'ın tool'ları nasıl kullandığında — basit bir soru-cevap kutusu bu adımları gizleyip projeyi sıradan bir chatbot'a indirger. Çözüm: `google-genai`'nin otomatik function-calling döngüsü, attığı her tool çağrısını ve sonucunu `response.automatic_function_calling_history`'de bırakıyor (final metin bunun dışında). `agent_client.py`'ye eklenen `_parse_trace()`, bunu `[{"tool", "args", "result"}, ...]`'a çeviriyor; `ask_with_trace()` bu ikisini birlikte döndürüyor (`ask()` geriye dönük uyumluluk için sadece metni döndürmeye devam ediyor).
+
+`api.py`'nin `AskResponse`'una `trace: list[TraceStep] = []` eklendi. `GET /` (`static/index.html`), her adımı bir "kart" olarak gösteriyor: tool adı, argümanlar, genişletilebilir sonuç — sonra final cevap.
+
+**Gerçek çok-adımlı doğrulama:** "PubMed'de P300 speller ile ilgili bir makale bul, abstract'ını getir ve özetle" sorusu, hem yerelde hem Docker'da hem canlı Render'da **2 adımlı bir trace** üretti (`search_papers` → `get_abstract` → final özet), her adımın argümanları ve sonucu doğru şekilde JSON'a serialize edildi.
+
+### 10.2 Model: `gemini-flash-latest` → `gemini-2.5-flash`
+
+Bkz. 10.3 — gerçek bir kredi tükenmesi sonrası, maliyeti düşürmek için `agent_client.py`'deki hem `ask_with_trace` hem `agent_basics.py`'deki `run_agent`/demo çağrısındaki model değiştirildi.
+
+### 10.3 Gerçek bir kesinti: Gemini ön ödeme kredisi tükenmesi
+
+Agent trace özelliğini canlıda test ederken, **basit bir tek-adım sorusu bile** `/ask`'ta 500 vermeye başladı. Yerelde tekrar üretilip gerçek traceback okundu:
+
+```
+google.genai.errors.ClientError: 402 RESOURCE_EXHAUSTED.
+{'error': {'message': 'Your prepayment credits are depleted...'}}
+```
+
+Kod hatası değildi — rag-literature-assistant/FAZ4_RAPOR.md Bölüm 9.3'teki aynı olay (bu oturumdaki yoğun gerçek API kullanımı kredi tükettirmişti; iki proje aynı Gemini hesabını paylaşıyor). Kullanıcı kredi yükledi, model daha ucuz bir sürüme düşürüldü, canlıda önceden 500 veren tam olarak aynı çok-adımlı sorgu tekrar denenip **200 + doğru 2-adımlı trace** ile doğrulandı.

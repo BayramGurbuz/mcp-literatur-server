@@ -4,9 +4,9 @@
 
 PubMed'de arama yapan, tek bir makalenin abstract'ını getiren ve (yapılandırılmışsa) sonuçları [rag-literature-assistant](https://github.com/BayramGurbuz/rag-literature-assistant)'ın RAG koleksiyonuna **HTTP üzerinden** indeksleyebilen bir [MCP](https://modelcontextprotocol.io/) server'ı, buna bağlanan bir Gemini agent'ı ve bu agent'ı saran bir HTTP API.
 
-**Canlı:** https://mcp-literatur-server.onrender.com/docs (Render ücretsiz katman — ilk istek, cold start + alt-process başlatma nedeniyle 20-30 saniye sürebilir)
+**Canlı:** https://mcp-literatur-server.onrender.com/ — sadece final cevabı değil, agent'ın hangi tool'u hangi argümanla çağırdığını da gösteren bir arayüz (ham API için [/docs](https://mcp-literatur-server.onrender.com/docs)). Render ücretsiz katman — ilk istek, cold start + alt-process başlatma nedeniyle 20-30 saniye sürebilir.
 
-- **Agent modeli:** `gemini-flash-latest`
+- **Agent modeli:** `gemini-2.5-flash`
 - **Transport:** stdio (agent, `paper_server.py`'ı alt-process olarak başlatıp JSON-RPC ile konuşur)
 
 ## Kurulum
@@ -39,11 +39,12 @@ uv run uvicorn api:app --port 8000
 
 > **Windows'ta not:** `uv run fastapi dev api.py` (hot-reload modu) bu projede `/ask`'ı sessizce 500'letiyor — reload mekanizması, MCP'nin alt-process başlatmak için ihtiyaç duyduğu asyncio subprocess desteğini bozuyor. Yerelde geliştirirken reload'suz `uvicorn api:app` kullan; Docker/Render zaten reload'suz çalışıyor, orada sorun yok.
 
-`http://127.0.0.1:8000/docs` adresinde Swagger arayüzü açılır.
+`http://127.0.0.1:8000/` adresinde agent'ın tool-çağırma günlüğünü gösteren özel bir arayüz açılır; `/docs`'ta ham API için Swagger.
 
 | Endpoint | Açıklama |
 |---|---|
-| `POST /ask` | `{"question": "..."}` gönder, `{"answer": "..."}` al |
+| `GET /` | Özel HTML/JS arayüz — soru sor, agent'ın hangi tool'u hangi argümanla çağırdığını ve sonucunu adım adım gör, sonra final cevabı gör |
+| `POST /ask` | `{"question": "..."}` gönder, `{"answer": "...", "trace": [{"tool", "args", "result"}, ...]}` al |
 | `GET /health` | Servisin ayakta olup olmadığını kontrol eder |
 
 ```bash
@@ -69,15 +70,19 @@ docker run -p 8000:8000 --env-file .env mcp-api
 
 **`index_paper` nasıl çalışıyor:** Bu araç artık Chroma'ya doğrudan yazmıyor — iki servis ayrı container'lar/disklerde çalıştığı için bu mümkün değil. Bunun yerine `rag-literature-assistant`'ın `POST /index` endpoint'ini HTTP üzerinden çağırıyor; o servis PubMed'den çekip kendi koleksiyonuna ekliyor. `RAG_API_URL` tanımsızsa `index_paper` çökmek yerine "yapılandırılmamış" mesajıyla nazikçe kapanır.
 
-**Canlıda doğrulandı:** mcp-literatur-server'a bir PMID indekslettirilip hemen ardından rag-literature-assistant'a o makalenin konusuyla ilgili bir soru sorularak, gerçekten aranabilir hale geldiği kanıtlandı. Detaylar için [FAZ4_RAPOR.md](FAZ4_RAPOR.md)'a bak.
+**Canlıda doğrulandı:** mcp-literatur-server'a bir PMID indekslettirilip hemen ardından rag-literature-assistant'a o makalenin konusuyla ilgili bir soru sorularak, gerçekten aranabilir hale geldiği kanıtlandı.
+
+**Maliyet:** Agent modeli, gerçek bir Gemini ön ödeme kredisi tükenmesi (RESOURCE_EXHAUSTED, HTTP 402) yaşanınca `gemini-flash-latest`'tan daha ucuz `gemini-2.5-flash`'a düşürüldü.
+
+Detaylar için [FAZ4_RAPOR.md](FAZ4_RAPOR.md)'a bak.
 
 ## Test
 
 ```bash
-uv run pytest -v
+uv run pytest -v   # 6 test
 ```
 
-`tests/test_api.py`, gerçek bir Gemini/MCP çağrısı yapmadan `api.ask`'ı `unittest.mock.AsyncMock` ile sahteler (`ask` async olduğu için).
+`tests/test_api.py`, gerçek bir Gemini/MCP çağrısı yapmadan `api.ask_with_trace`'i `unittest.mock.AsyncMock` ile sahteler (`ask_with_trace` async olduğu için).
 
 ## Mimari
 
@@ -96,5 +101,7 @@ Gemini agent (agent_client.py, async)
 ```
 
 `index_paper`, rag-literature-assistant'ın `/index`'ini çağırıyor — o servis kendi `fetch_papers`/`index_paper` fonksiyonlarıyla PubMed'den çekip parçalayıp embed'liyor. Bu repo artık kendi başına ne Chroma'ya ne embedding'e dokunuyor.
+
+**Trace nereden geliyor:** `google-genai`'nin otomatik function-calling döngüsü, attığı her tool çağrısını ve aldığı her sonucu `response.automatic_function_calling_history`'de bırakıyor (final metnin dışında, `response.text`'te). `agent_client._parse_trace` bunu `[{"tool", "args", "result"}, ...]`'a çeviriyor — `GET /` bunu adım adım gösteriyor.
 
 Faz 3'ün orijinal tasarım kararları için [FAZ3_RAPOR.md](FAZ3_RAPOR.md)'a; API/Docker/CI/Render'a geçiş süreci ve karşılaşılan gerçek sorunlar için [FAZ4_RAPOR.md](FAZ4_RAPOR.md)'a bak.

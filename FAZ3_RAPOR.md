@@ -6,6 +6,8 @@
 **Modeller:** ajan `gemini-flash-latest`, embedding `gemini-embedding-001`
 **Kütüphaneler:** `mcp` 2.x (SDK), `google-genai` 2.24.0, `httpx`, `chromadb`, `python-dotenv`
 
+> **Not (Faz 4 sonrası):** Agent modeli maliyet nedeniyle `gemini-2.5-flash`'a düşürüldü; `index_paper` artık Chroma'ya doğrudan yazmıyor, `chromadb` bu repodan tamamen kalktı — bkz. [FAZ4_RAPOR.md](FAZ4_RAPOR.md) Bölüm 9-10. Aşağıdaki içerik, o zamanki tasarımın tarihsel bir kaydı olarak değiştirilmedi.
+
 ---
 
 ## 1. Özet
