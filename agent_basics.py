@@ -3,7 +3,17 @@ from google import genai
 from google.genai import types
 
 load_dotenv()
-client = genai.Client()
+_client: genai.Client | None = None
+
+
+def _get_client() -> genai.Client:
+    """Tembel açılır: `tests/test_agent.py`'nin `from agent_basics import add, ...`
+    satırı yalnızca import ediyor, GEMINI_API_KEY olmayan bir ortamda (CI) bile
+    çökmemesi için `genai.Client()` burada değil, ilk gerçek kullanımda çalışır."""
+    global _client
+    if _client is None:
+        _client = genai.Client()
+    return _client
 
 
 def get_paper_count(search_term: str) -> int:
@@ -55,7 +65,7 @@ def run_agent(question: str, max_iterations: int = 5) -> str:
     )
 
     for i in range(max_iterations):
-        response = client.models.generate_content(model="gemini-flash-latest", contents=contents, config=config)
+        response = _get_client().models.generate_content(model="gemini-flash-latest", contents=contents, config=config)
 
         if not response.function_calls:
             return response.text  # model artık tool istemiyor, final cevap bu
@@ -77,7 +87,7 @@ if __name__ == "__main__":
     # Bu demo çağrılarını guard'ın içine aldık: modül import edildiğinde (örn. testte
     # `from agent_basics import add, multiply, run_agent`) tetiklenmesinler diye —
     # aksi halde her `pytest` çalıştırmasında gerçek Gemini API istekleri gider.
-    response = client.models.generate_content(
+    response = _get_client().models.generate_content(
         model="gemini-flash-latest",
         contents="PubMed'de SSVEP ile ilgili kaç makale var?",
         config=types.GenerateContentConfig(tools=[get_paper_count]),
