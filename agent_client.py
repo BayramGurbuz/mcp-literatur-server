@@ -7,7 +7,22 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 load_dotenv()
-client = genai.Client()
+
+_client: genai.Client | None = None
+
+
+def _get_client() -> genai.Client:
+    """Tembel açılır: import zamanında değil, ilk `ask()` çağrısında.
+
+    api.py bu modülü `from agent_client import ask` ile import ediyor;
+    genai.Client() burada eager çalışsaydı, GEMINI_API_KEY olmayan bir
+    ortamda (örn. CI, test suite) sadece import etmek bile çökerdi.
+    """
+    global _client
+    if _client is None:
+        _client = genai.Client()
+    return _client
+
 
 # StdioServerParameters, alt-process'e varsayılan olarak yalnızca güvenli bir
 # allowlist (PATH, HOME vb.) geçiriyor — GEMINI_API_KEY bunda yok. paper_server.py
@@ -31,7 +46,7 @@ async def ask(question: str) -> str:
             # "TypeError: cannot pickle '_asyncio.Task' object" ile patlıyor (google-genai
             # 2.24.0, Python 3.11, Windows). Dict verildiğinde SDK farklı bir kod yoluna
             # girip bu deep-copy'yi atlıyor.
-            response = await client.aio.models.generate_content(
+            response = await _get_client().aio.models.generate_content(
                 model="gemini-flash-latest",
                 contents=question,
                 config={"tools": [session]},
