@@ -75,7 +75,8 @@ Canlı URL'e `index_paper`'ı tetikleyecek bir soru ("PMID X'i indeksle") soruld
 ## 6. Sınırlamalar (dürüst değerlendirme)
 
 - **`fastapi dev`/reload sorununun kök sebebi tam izole edilmedi:** Gözlem tekrarlanabilir (reload = sessiz 500, reload'suz = çalışır) ama uvicorn/anyio/mcp'nin hangi kesişiminin tam olarak sorumlu olduğu doğrulanmadı; yalnızca Windows'ta gözlendi, Docker'da (Linux) hiç sorun yok.
-- **`index_paper` production'da tamamen devre dışı** — bilinçli bir tradeoff, ama bu, roadmap'in "Faz 3 makale bulup Faz 2'nin koleksiyonuna eklesin" hedefinin canlı ortamda çalışmadığı anlamına geliyor. rag-literature-assistant/FAZ4_RAPOR.md Bölüm 9'da önerilen HTTP tabanlı `/index` endpoint'i bu sınırlamayı gerçekten çözerdi.
+- ~~`index_paper` production'da tamamen devre dışı~~ — **çözüldü, bkz. Bölüm 9.**
+- **`POST /index`'e giden makale kalıcı değil:** rag-literature-assistant'ın Render disk'i kalıcı olmadığı için, bu servisle eklenen bir makale de bir sonraki cold start'ta kaybolur (rag-literature-assistant/FAZ4_RAPOR.md Bölüm 5'e bak) — `index_paper` "başarılı" dese de bu geçici bir başarı.
 - **Cold start + alt-process başlatma birikiyor:** Render'ın kendi cold start'ı (~birkaç saniye) ile `uv run paper_server.py`'ın her istekte yeniden başlaması (agent_client.py her `ask()` çağrısında yeni bir `stdio_client` açıyor, subprocess'i **kalıcı tutmuyor**) üst üste biniyor — her istek, bağlantı kalıcı olsaydı gerekmeyecek bir subprocess başlatma maliyeti taşıyor.
 - **Eşzamanlılık düşünülmedi:** Aynı anda birden fazla `/ask` isteği gelirse, her biri kendi `paper_server.py` alt-process'ini başlatır; teorik olarak kaynak tüketimi/yarış durumu oluşabilir, bu projede test edilmedi.
 
@@ -89,9 +90,10 @@ Canlı URL'e `index_paper`'ı tetikleyecek bir soru ("PMID X'i indeksle") soruld
 | `Dockerfile` | Çok aşamalı build, **final aşamada da `uv`** (runtime subprocess için) |
 | `.dockerignore` | `.venv/`, `tests/`, `.git/`, `.env` vb. |
 | `.github/workflows/ci.yml` | Push/PR'da `uv sync` + `pytest` |
-| `agent_client.py` (değişti) | `genai.Client()` tembelleştirildi; `StdioServerParameters`'a `env=` eklendi |
+| `agent_client.py` (değişti) | `genai.Client()` tembelleştirildi; `StdioServerParameters`'a `env=` eklendi (Bölüm 9'da `RAG_API_URL`/`INDEX_API_KEY`'e güncellendi) |
 | `agent_basics.py` (değişti) | `genai.Client()` tembelleştirildi (CI'ı kıran unutulmuş satır) |
 | `tests/test_api.py` | `AsyncMock` ile `/ask`, `/health`, 422 testleri |
+| `paper_server.py` (Bölüm 9'da değişti) | `index_paper`, Chroma/embedding yerine `rag-literature-assistant`'ın `/index`'ini HTTP ile çağırıyor; `chromadb`/embedding kodu tamamen kalktı |
 
 **Çalıştırma**
 ```bash
@@ -108,4 +110,20 @@ uv run pytest -v                  # 5 test
 
 1. **`fastapi dev`/reload sorununun kök sebebini izole etmek:** uvicorn'un reload subprocess'inin event loop policy'sini incelemek, minimal bir tekrar üretim (yalnızca `asyncio.create_subprocess_exec` + `--reload`) ile doğrulamak.
 2. **Kalıcı MCP bağlantısı:** Her `/ask` isteğinde yeni bir `stdio_client`/subprocess açmak yerine, uygulama başlarken tek bir `ClientSession` açıp isteğe göre yeniden kullanmak (subprocess başlatma maliyetini ortadan kaldırır).
-3. **HTTP tabanlı `/index` entegrasyonu:** rag-literature-assistant'a bir `/index` endpoint'i ekleyip, `index_paper`'ın Chroma'ya doğrudan yazmak yerine bu endpoint'i HTTP ile çağırması — iki servisin paylaşılan disk yerine doğru şekilde (API'yle) bağlanması.
+3. ~~HTTP tabanlı `/index` entegrasyonu~~ — **yapıldı, bkz. Bölüm 9.**
+4. **Kalıcılık:** rag-literature-assistant kalıcı bir vector DB'ye geçerse, `index_paper` ile eklenen makaleler de artık cold start'ta kaybolmaz (bkz. Bölüm 6).
+
+---
+
+## 9. Ek — `index_paper`'ı HTTP üzerinden `/index`'e bağlama
+
+`paper_server.py`'nin `index_paper` tool'u, Chroma'ya doğrudan yazmak yerine artık `rag-literature-assistant`'ın `POST /index` endpoint'ini `httpx.post` ile çağırıyor. Bu, `RAG_API_URL` ortam değişkeninin (Render'da `https://rag-literature-assistant.onrender.com`) tanımlı olmasını gerektiriyor; tanımsızsa eskisi gibi nazikçe kapanıyor.
+
+**Yan etki — bu repo basitleşti:** `chromadb` ve embedding için kullanılan `google-genai` çağrıları tamamen kalktı; `uv remove chromadb` ile 41 paket `pyproject.toml`'dan düştü. `_chunk_sentences`, `_get_collection`, `COLLECTION_NAME`, `METADATA_FIELDS` silindi — bunların hepsi artık yalnızca `rag-literature-assistant`'ta, tek yerde yaşıyor.
+
+**Bulunan ek bir env-passthrough sorunu:** `StdioServerParameters`'ın `env=` sözlüğü daha önce yalnızca `GEMINI_API_KEY`'i içeriyordu (Bölüm 5'teki `MCPError: Connection closed` düzeltmesinden kalma). `RAG_API_URL`/`INDEX_API_KEY` de aynı varsayılan allowlist'in dışında olduğu için, bunlar açıkça eklenmeden Docker'da `index_paper` hep "yapılandırılmamış" derdi — aynı sınıf hatanın üçüncü kez tekrarı (ilk ikisi Bölüm 5'te: `GEMINI_API_KEY` hem burada hem `agent_basics.py`'de). Ayrıca artık `paper_server.py` `genai.Client()` kullanmadığı için `GEMINI_API_KEY`'in subprocess'e geçirilmesine de gerek kalmadı; `env=` sözlüğü tamamen `RAG_API_URL`/`INDEX_API_KEY`'e güncellendi.
+
+**Uçtan uca gerçek doğrulama (canlı Render URL'lerinde, yerel + Docker'da da tekrarlandı):**
+1. Yerelde: `.env` tamamen kaldırılıp (yalnızca `os.environ`'dan silmek değil) sadece gerçek ortam değişkenleriyle test edildi — subprocess'e geçiş doğru çalıştı.
+2. Docker'da: `mcp-api` container'ı, host'taki `rag-literature-assistant` sürecine `host.docker.internal` ile erişti; zaten koleksiyonda olan bir PMID'yi (42747938) yeniden indeksledi — `upsert` idempotent kaldığı için chunk sayısı değişmedi (82).
+3. Canlıda: `mcp-literatur-server`'a "PMID 37875091'i indeksle" dendi → gerçek `POST /index` gitti (17sn, 200) → hemen ardından `rag-literature-assistant`'a o makalenin konusuyla ilgili bir soru soruldu → daha önce koleksiyonda hiç olmayan bu konuda doğru kaynakla cevap geldi. `INDEX_API_KEY` korumasız direkt istek → 401.

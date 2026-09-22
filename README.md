@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/BayramGurbuz/mcp-literatur-server/actions/workflows/ci.yml/badge.svg)
 
-PubMed'de arama yapan, tek bir makalenin abstract'ını getiren ve (yapılandırılmışsa) sonuçları [rag-literature-assistant](https://github.com/BayramGurbuz/rag-literature-assistant)'ın RAG koleksiyonuna indeksleyebilen bir [MCP](https://modelcontextprotocol.io/) server'ı, buna bağlanan bir Gemini agent'ı ve bu agent'ı saran bir HTTP API.
+PubMed'de arama yapan, tek bir makalenin abstract'ını getiren ve (yapılandırılmışsa) sonuçları [rag-literature-assistant](https://github.com/BayramGurbuz/rag-literature-assistant)'ın RAG koleksiyonuna **HTTP üzerinden** indeksleyebilen bir [MCP](https://modelcontextprotocol.io/) server'ı, buna bağlanan bir Gemini agent'ı ve bu agent'ı saran bir HTTP API.
 
 **Canlı:** https://mcp-literatur-server.onrender.com/docs (Render ücretsiz katman — ilk istek, cold start + alt-process başlatma nedeniyle 20-30 saniye sürebilir)
 
@@ -19,6 +19,8 @@ uv sync
 
 ```
 GEMINI_API_KEY=...
+RAG_API_URL=http://127.0.0.1:8010   # index_paper için, opsiyonel: rag-literature-assistant'ın adresi
+INDEX_API_KEY=...                    # opsiyonel, rag-literature-assistant'ta INDEX_API_KEY ayarlıysa aynısı buraya
 ```
 
 ## Kullanım
@@ -59,15 +61,15 @@ docker run -p 8000:8000 --env-file .env mcp-api
 
 `agent_client.py`, `paper_server.py`'ı `uv run paper_server.py` ile alt-process olarak başlattığı için `uv`'nin runtime image'ında da bulunması gerekir (sadece build aşamasında değil) — Dockerfile'ın final aşaması bunun için `uv` binary'sini ayrıca kopyalar.
 
-**`GEMINI_API_KEY`'in alt-process'e geçişi:** MCP'nin `StdioServerParameters`'ı, alt-process'e varsayılan olarak yalnızca güvenli bir allowlist (`PATH`, `HOME` vb.) geçirir — rastgele ortam değişkenlerini (örn. `GEMINI_API_KEY`) otomatik geçirmez. `agent_client.py` bunu `env={"GEMINI_API_KEY": ...}` ile açıkça iletir; aksi halde `paper_server.py` alt-process'i Docker'da (yerelde `.env` dosyasından tembelce yükleyebildiği gibi bir şansı olmadan) key'siz kalıp çökerdi.
+**`RAG_API_URL`/`INDEX_API_KEY`'in alt-process'e geçişi:** MCP'nin `StdioServerParameters`'ı, alt-process'e varsayılan olarak yalnızca güvenli bir allowlist (`PATH`, `HOME` vb.) geçirir — rastgele ortam değişkenlerini otomatik geçirmez. `agent_client.py` bunları `env={...}` ile açıkça iletir; aksi halde `paper_server.py` alt-process'i Docker'da (yerelde `.env` dosyasından tembelce yükleyebildiği gibi bir şansı olmadan) bunlarsız kalıp `index_paper`'ı hep "yapılandırılmamış" derdi.
 
 ## Deploy (Render)
 
-`GEMINI_API_KEY` env var olarak eklenir. **`RAG_CHROMA_DB_PATH` bilerek eklenmez** — bu, `index_paper` tool'unun production'da devre dışı kalmasını sağlayan bilinçli bir tercih (aşağıya bak).
+`GEMINI_API_KEY` eklenir; `index_paper`'ın çalışması için ayrıca `RAG_API_URL=https://rag-literature-assistant.onrender.com` ve (rag-literature-assistant'ta `INDEX_API_KEY` ayarlıysa) aynı `INDEX_API_KEY` eklenir.
 
-**`index_paper` production'da neden kapalı:** Bu araç, [rag-literature-assistant](https://github.com/BayramGurbuz/rag-literature-assistant)'ın Chroma koleksiyonuna doğrudan yazar. İki servis Render'da ayrı container'lar/ayrı disklerde çalıştığı için bu artık mümkün değil (paylaşılan disk yok). `RAG_CHROMA_DB_PATH` tanımsızsa `index_paper` çökmek yerine "İndeksleme bu ortamda yapılandırılmamış" mesajıyla nazikçe kapanır — servisin tamamı bu yüzden etkilenmez.
+**`index_paper` nasıl çalışıyor:** Bu araç artık Chroma'ya doğrudan yazmıyor — iki servis ayrı container'lar/disklerde çalıştığı için bu mümkün değil. Bunun yerine `rag-literature-assistant`'ın `POST /index` endpoint'ini HTTP üzerinden çağırıyor; o servis PubMed'den çekip kendi koleksiyonuna ekliyor. `RAG_API_URL` tanımsızsa `index_paper` çökmek yerine "yapılandırılmamış" mesajıyla nazikçe kapanır.
 
-Detaylar için [FAZ4_RAPOR.md](FAZ4_RAPOR.md)'a bak.
+**Canlıda doğrulandı:** mcp-literatur-server'a bir PMID indekslettirilip hemen ardından rag-literature-assistant'a o makalenin konusuyla ilgili bir soru sorularak, gerçekten aranabilir hale geldiği kanıtlandı. Detaylar için [FAZ4_RAPOR.md](FAZ4_RAPOR.md)'a bak.
 
 ## Test
 
@@ -88,9 +90,11 @@ Gemini agent (agent_client.py, async)
         │  1) list_tools()                    ├─ ping(message)
         │  2) call_tool(isim, argümanlar)      ├─ search_papers(query, max_results)  ──► PubMed esearch+esummary
         │                                      ├─ get_abstract(pmid)                 ──► PubMed efetch (XML)
-        │                                      └─ index_paper(pmid)                  ──► RAG_CHROMA_DB_PATH tanımlıysa
-        ▼                                                                                  Chroma upsert, yoksa nazik mesaj
-   response.text
+        │                                      └─ index_paper(pmid)                  ──► RAG_API_URL tanımlıysa
+        ▼                                                                                  POST {RAG_API_URL}/index,
+   response.text                                                                            yoksa nazik mesaj
 ```
+
+`index_paper`, rag-literature-assistant'ın `/index`'ini çağırıyor — o servis kendi `fetch_papers`/`index_paper` fonksiyonlarıyla PubMed'den çekip parçalayıp embed'liyor. Bu repo artık kendi başına ne Chroma'ya ne embedding'e dokunuyor.
 
 Faz 3'ün orijinal tasarım kararları için [FAZ3_RAPOR.md](FAZ3_RAPOR.md)'a; API/Docker/CI/Render'a geçiş süreci ve karşılaşılan gerçek sorunlar için [FAZ4_RAPOR.md](FAZ4_RAPOR.md)'a bak.
