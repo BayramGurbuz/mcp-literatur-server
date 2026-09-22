@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 from dotenv import load_dotenv
 from google import genai
@@ -8,7 +9,16 @@ from mcp.client.stdio import stdio_client
 load_dotenv()
 client = genai.Client()
 
-server_params = StdioServerParameters(command="uv", args=["run", "paper_server.py"])
+# StdioServerParameters, alt-process'e varsayılan olarak yalnızca güvenli bir
+# allowlist (PATH, HOME vb.) geçiriyor — GEMINI_API_KEY bunda yok. paper_server.py
+# kendi genai.Client()'ını kurarken bu key'e ihtiyaç duyuyor; production'da (Docker/
+# Render) .env dosyası imajda olmadığı için server'ın kendi load_dotenv()'i de onu
+# bulamıyor. Açıkça geçiyoruz.
+server_params = StdioServerParameters(
+    command="uv",
+    args=["run", "paper_server.py"],
+    env={"GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", "")},
+)
 
 
 async def ask(question: str) -> str:
