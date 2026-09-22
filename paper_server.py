@@ -1,23 +1,14 @@
 import os
-import re
 import xml.etree.ElementTree as ET
 
-import chromadb
 import httpx
 from dotenv import load_dotenv
-from google import genai
-from google.genai import errors, types
 from mcp.server.mcpserver import MCPServer
 
 load_dotenv()
 mcp = MCPServer("literatur-server")
-client = genai.Client()
 
 BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
-COLLECTION_NAME = "bci_abstracts"
-METADATA_FIELDS = ("pmid", "title", "journal", "year", "first_author")
-
-_collection: chromadb.Collection | None = None  # ilk index_paper çağrısında açılır
 
 
 @mcp.tool()
@@ -117,76 +108,39 @@ def get_abstract(pmid: str) -> str:
     return f"{paper['title']}\n\n{paper['abstract']}"
 
 
-def _chunk_sentences(title: str, abstract: str, max_chars: int = 800) -> list[str]:
-    """Abstract'ı cümle sınırlarında böler; her chunk'ın başına makale başlığını ekler.
-
-    Faz 2'deki chunk_sentences ile birebir aynı — aynı koleksiyona yazdığımız için
-    chunk formatı orada indekslenmiş makalelerle tutarlı olmalı.
-    """
-    sentences = re.split(r"(?<=[.!?])\s+", abstract)
-    groups: list[str] = []
-    current = ""
-    for sentence in sentences:
-        if current and len(current) + 1 + len(sentence) > max_chars:
-            groups.append(current)
-            current = sentence
-        else:
-            current = f"{current} {sentence}".strip()
-    if current:
-        groups.append(current)
-    return [f"{title}\n\n{g}" for g in groups]
-
-
-def _get_collection() -> chromadb.Collection | None:
-    """Faz 2'nin Chroma koleksiyonunu tembel açar. RAG_CHROMA_DB_PATH ayarlı
-    değilse ya da yoldaki klasöre erişilemiyorsa None döner — indeksleme
-    özelliği bu ortamda sessizce kapanır (örn. production'da paylaşılan
-    disk yok, her servis kendi container'ında)."""
-    global _collection
-    if _collection is None:
-        db_path = os.getenv("RAG_CHROMA_DB_PATH")
-        if not db_path or not os.path.isdir(db_path):
-            return None
-        chroma_client = chromadb.PersistentClient(path=db_path)
-        _collection = chroma_client.get_or_create_collection(name=COLLECTION_NAME)
-    return _collection
-
-
 @mcp.tool()
 def index_paper(pmid: str) -> str:
-    """Verilen PMID'yi Faz 2'deki RAG koleksiyonuna (bci_abstracts) indeksler.
+    """Verilen PMID'yi rag-literature-assistant'ın RAG koleksiyonuna indeksler.
 
     Bu, MCP server'ı hem arama hem de RAG sistemine veri besleme aracı yapar:
     agent önce search_papers ile makale bulur, ilginç bulduğunu index_paper ile
-    kalıcı koleksiyona ekler, sonra Faz 2'deki chat_loop o makaleyi de kullanabilir.
+    kalıcı koleksiyona ekler, sonra rag-literature-assistant'ın /ask'ı o makaleyi
+    de kullanabilir. Chroma'ya doğrudan yazmak yerine (iki servis artık ayrı
+    container'larda/disklerde çalıştığı için paylaşılan dosyaya güvenemiyoruz)
+    rag-literature-assistant'ın /index endpoint'ini HTTP üzerinden çağırıyor.
 
     Args:
         pmid: PubMed makale ID'si, örn. "42747938"
     """
-    collection = _get_collection()
-    if collection is None:
-        return "İndeksleme bu ortamda yapılandırılmamış (RAG_CHROMA_DB_PATH ayarlı değil)."
+    rag_api_url = os.getenv("RAG_API_URL")
+    if not rag_api_url:
+        return "İndeksleme bu ortamda yapılandırılmamış (RAG_API_URL ayarlı değil)."
 
-    paper = _fetch_paper(pmid)
-    if paper is None:
-        return f"PMID {pmid} indekslenemedi: abstract bulunamadı ya da PubMed isteği başarısız oldu."
+    headers = {}
+    index_api_key = os.getenv("INDEX_API_KEY")
+    if index_api_key:
+        headers["X-Api-Key"] = index_api_key
 
-    chunks = _chunk_sentences(paper["title"], paper["abstract"])
     try:
-        response = client.models.embed_content(
-            model="gemini-embedding-001",
-            contents=chunks,
-            config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
-        )
-    except errors.APIError as e:
-        return f"PMID {pmid} indekslenemedi: embedding isteği başarısız oldu ({e})."
-    embeddings = [e.values for e in response.embeddings]
+        response = httpx.post(f"{rag_api_url}/index", json={"pmid": pmid}, headers=headers, timeout=60)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        return f"PMID {pmid} indekslenemedi: rag-literature-assistant {e.response.status_code} döndürdü ({e.response.text})."
+    except httpx.HTTPError as e:
+        return f"PMID {pmid} indekslenemedi: rag-literature-assistant'a istek başarısız oldu ({e})."
 
-    ids = [f"{paper['pmid']}_{i}" for i in range(len(chunks))]
-    metadatas = [{k: paper[k] for k in METADATA_FIELDS} for _ in chunks]
-    # add yerine upsert: aynı PMID tekrar indekslenirse hata vermesin
-    collection.upsert(ids=ids, embeddings=embeddings, documents=chunks, metadatas=metadatas)
-    return f"PMID {pmid} ({paper['title']}) {len(chunks)} chunk olarak '{COLLECTION_NAME}' koleksiyonuna indekslendi."
+    data = response.json()
+    return f"PMID {pmid}, rag-literature-assistant'a {data['chunks']} chunk olarak indekslendi."
 
 
 if __name__ == "__main__":

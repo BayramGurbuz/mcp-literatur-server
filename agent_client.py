@@ -25,14 +25,17 @@ def _get_client() -> genai.Client:
 
 
 # StdioServerParameters, alt-process'e varsayılan olarak yalnızca güvenli bir
-# allowlist (PATH, HOME vb.) geçiriyor — GEMINI_API_KEY bunda yok. paper_server.py
-# kendi genai.Client()'ını kurarken bu key'e ihtiyaç duyuyor; production'da (Docker/
-# Render) .env dosyası imajda olmadığı için server'ın kendi load_dotenv()'i de onu
-# bulamıyor. Açıkça geçiyoruz.
+# allowlist (PATH, HOME vb.) geçiriyor — RAG_API_URL/INDEX_API_KEY bunda yok.
+# paper_server.py'nin index_paper'ı bunlara ihtiyaç duyuyor; yerelde kendi
+# load_dotenv()'i diskteki .env'i bulabildiği için bu fark edilmeyebilir, ama
+# Docker/Render'da (.env imajda yok) subprocess bunlarsız kalır. Açıkça geçiyoruz.
 server_params = StdioServerParameters(
     command="uv",
     args=["run", "paper_server.py"],
-    env={"GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", "")},
+    env={
+        "RAG_API_URL": os.environ.get("RAG_API_URL", ""),
+        "INDEX_API_KEY": os.environ.get("INDEX_API_KEY", ""),
+    },
 )
 
 
