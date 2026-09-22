@@ -1,0 +1,21 @@
+[project]
+name = "mcp-literatur-server"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "chromadb>=1.5.9",
+    "google-genai>=2.24.0",
+    "httpx>=0.28.1",
+    "mcp>=2.2.0",
+    "python-dotenv>=1.2.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
