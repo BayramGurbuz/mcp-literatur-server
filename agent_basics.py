@@ -65,7 +65,7 @@ def run_agent(question: str, max_iterations: int = 5) -> str:
     )
 
     for i in range(max_iterations):
-        response = _get_client().models.generate_content(model="gemini-flash-latest", contents=contents, config=config)
+        response = _get_client().models.generate_content(model="gemini-2.5-flash", contents=contents, config=config)
 
         if not response.function_calls:
             return response.text  # model artık tool istemiyor, final cevap bu
@@ -88,7 +88,7 @@ if __name__ == "__main__":
     # `from agent_basics import add, multiply, run_agent`) tetiklenmesinler diye —
     # aksi halde her `pytest` çalıştırmasında gerçek Gemini API istekleri gider.
     response = _get_client().models.generate_content(
-        model="gemini-flash-latest",
+        model="gemini-2.5-flash",
         contents="PubMed'de SSVEP ile ilgili kaç makale var?",
         config=types.GenerateContentConfig(tools=[get_paper_count]),
     )

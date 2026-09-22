@@ -83,7 +83,7 @@ async def ask_with_trace(question: str) -> tuple[str, list[dict]]:
             # 2.24.0, Python 3.11, Windows). Dict verildiğinde SDK farklı bir kod yoluna
             # girip bu deep-copy'yi atlıyor.
             response = await _get_client().aio.models.generate_content(
-                model="gemini-flash-latest",
+                model="gemini-2.5-flash",
                 contents=question,
                 config={"tools": [session]},
             )
