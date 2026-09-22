@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MCP Literatür Agent</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e38;
+    --text: #e6e8eb;
+    --muted: #9aa1ac;
+    --accent: #2dd4a7;
+    --accent-dark: #1fae87;
+    --error: #ef5959;
+    --tool: #d9a34a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 32px 16px;
+  }
+  main { width: 100%; max-width: 720px; }
+  header { text-align: center; margin-bottom: 28px; }
+  h1 { font-size: 1.6rem; margin: 0 0 8px; }
+  header p { color: var(--muted); margin: 0; font-size: 0.95rem; line-height: 1.5; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  textarea {
+    width: 100%;
+    min-height: 80px;
+    resize: vertical;
+    background: #0d0f13;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 1rem;
+    font-family: inherit;
+  }
+  textarea:focus { outline: 2px solid var(--accent); }
+  .row { display: flex; justify-content: flex-end; margin-top: 12px; gap: 8px; }
+  button {
+    background: var(--accent);
+    color: #06231b;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 20px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--accent-dark); }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  .examples { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .example-chip {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-size: 0.85rem;
+    font-weight: 400;
+  }
+  .example-chip:hover:not(:disabled) { border-color: var(--accent); color: var(--text); background: transparent; }
+  #result { margin-top: 20px; }
+  .answer-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+  .answer-card.error { border-color: var(--error); color: var(--error); }
+  .loading { display: flex; align-items: center; gap: 10px; color: var(--muted); padding: 20px; }
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .trace { margin-bottom: 16px; }
+  .trace-label {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .trace-step {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--tool);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    font-size: 0.88rem;
+  }
+  .trace-step .call {
+    font-family: "SF Mono", Consolas, monospace;
+    color: var(--tool);
+  }
+  .trace-step .call .name { font-weight: 700; }
+  .trace-step .result {
+    margin-top: 6px;
+    color: var(--muted);
+    white-space: pre-wrap;
+    max-height: 4.8em;
+    overflow: hidden;
+    position: relative;
+  }
+  .trace-step .result.expanded { max-height: none; }
+  .trace-step .toggle {
+    background: none;
+    border: none;
+    color: var(--accent);
+    padding: 4px 0 0;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  footer { text-align: center; margin-top: 28px; font-size: 0.8rem; color: var(--muted); }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>🤖 MCP Literatür Agent</h1>
+    <p>PubMed'de arama yapan, makale özeti getiren ve bulduklarını RAG koleksiyonuna indeksleyebilen bir Gemini agent'ı.<br>Aşağıda sadece final cevabı değil, agent'ın hangi aracı hangi argümanla çağırdığını da göreceksin.</p>
+  </header>
+
+  <div class="card">
+    <textarea id="question" placeholder="Örn: PubMed'de SSVEP ile ilgili 1 makale bul, PMID'sini söyle."></textarea>
+    <div class="row">
+      <button id="ask-btn">Sor</button>
+    </div>
+    <div class="examples">
+      <button class="example-chip" data-q="PubMed'de SSVEP ile ilgili 2 makale bul, başlık ve PMID söyle.">SSVEP makalesi bul</button>
+      <button class="example-chip" data-q="PubMed'de P300 speller ile ilgili bir makale bul, abstract'ını getir ve tek cümlede özetle.">Bul + abstract + özetle</button>
+      <button class="example-chip" data-q="PMID 42747938 için abstract getir.">Abstract getir</button>
+    </div>
+  </div>
+
+  <div id="result"></div>
+
+  <footer>
+    API dokümantasyonu: <a href="/docs">/docs</a> ·
+    <a href="https://github.com/BayramGurbuz/mcp-literatur-server" target="_blank" rel="noopener">GitHub</a> ·
+    RAG servisi: <a href="https://rag-literature-assistant.onrender.com/" target="_blank" rel="noopener">rag-literature-assistant</a>
+  </footer>
+</main>
+
+<script>
+  const questionEl = document.getElementById("question");
+  const askBtn = document.getElementById("ask-btn");
+  const resultEl = document.getElementById("result");
+
+  function escapeHtml(str) {
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function formatAnswer(text) {
+    return escapeHtml(text)
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/^\s*[-*] (.+)$/gm, "• $1");
+  }
+
+  function renderTrace(trace) {
+    if (!trace || trace.length === 0) return "";
+    const steps = trace
+      .map((step, i) => {
+        const args = JSON.stringify(step.args ?? {});
+        const result = escapeHtml(step.result ?? "(sonuç yok)");
+        const stepId = `trace-result-${i}`;
+        return `<div class="trace-step">
+          <div class="call">🔧 <span class="name">${escapeHtml(step.tool)}</span>(${escapeHtml(args)})</div>
+          <div class="result" id="${stepId}">${result}</div>
+          <button class="toggle" data-target="${stepId}">tümünü göster</button>
+        </div>`;
+      })
+      .join("");
+    return `<div class="trace">
+      <div class="trace-label">⚙️ Agent'ın işlem günlüğü (${trace.length} adım)</div>
+      ${steps}
+    </div>`;
+  }
+
+  async function ask(question) {
+    if (!question.trim()) return;
+    askBtn.disabled = true;
+    resultEl.innerHTML = `<div class="loading"><div class="spinner"></div> Agent çalışıyor — alt-process başlatılıyor, PubMed'de aranıyor... (ilk istekte sunucu da uyanıyor olabilir, 20-30 saniye sürebilir)</div>`;
+
+    try {
+      const response = await fetch("/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        const detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+        resultEl.innerHTML = `<div class="answer-card error">Hata (${response.status}): ${escapeHtml(detail)}</div>`;
+        return;
+      }
+
+      resultEl.innerHTML = renderTrace(data.trace) + `<div class="answer-card">${formatAnswer(data.answer)}</div>`;
+      resultEl.querySelectorAll(".toggle").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const el = document.getElementById(btn.dataset.target);
+          const expanded = el.classList.toggle("expanded");
+          btn.textContent = expanded ? "gizle" : "tümünü göster";
+        });
+      });
+    } catch (err) {
+      resultEl.innerHTML = `<div class="answer-card error">İstek başarısız oldu: ${escapeHtml(String(err))}</div>`;
+    } finally {
+      askBtn.disabled = false;
+    }
+  }
+
+  askBtn.addEventListener("click", () => ask(questionEl.value));
+  questionEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ask(questionEl.value);
+  });
+  document.querySelectorAll(".example-chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      questionEl.value = chip.dataset.q;
+      ask(chip.dataset.q);
+    });
+  });
+</script>
+</body>
+</html>
