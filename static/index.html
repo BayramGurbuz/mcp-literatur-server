@@ -115,11 +115,30 @@
     margin-bottom: 8px;
     font-size: 0.88rem;
   }
-  .trace-step .call {
+  .trace-step .call { color: var(--text); font-weight: 600; }
+  .trace-step .call .arg { color: var(--tool); }
+  .trace-step .raw {
+    display: none;
+    margin-top: 6px;
     font-family: "SF Mono", Consolas, monospace;
-    color: var(--tool);
+    font-size: 0.78rem;
+    color: var(--muted);
+    white-space: pre-wrap;
+    word-break: break-word;
   }
-  .trace-step .call .name { font-weight: 700; }
+  .trace-step .raw.shown { display: block; }
+  .trace-step .toggles { display: flex; gap: 14px; }
+  .trace-step.failed { border-left-color: var(--error); }
+  .trace-step.failed .result { color: var(--error); }
+  .answer-card code {
+    font-family: "SF Mono", Consolas, monospace;
+    font-size: 0.88em;
+    background: #0d0f13;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+  .answer-card .heading { display: inline-block; font-size: 1.05em; margin-top: 4px; }
   .trace-step .result {
     margin-top: 6px;
     color: var(--muted);
@@ -146,7 +165,7 @@
 <main>
   <header>
     <h1>🤖 MCP Literatür Agent</h1>
-    <p>PubMed'de arama yapan, makale özeti getiren ve bulduklarını RAG koleksiyonuna indeksleyebilen bir Gemini agent'ı.<br>Aşağıda sadece final cevabı değil, agent'ın hangi aracı hangi argümanla çağırdığını da göreceksin.</p>
+    <p>PubMed'de makale arayan, makale özetlerini getiren ve bulduklarını bilgi bankasına kaydedebilen bir yapay zekâ asistanı.<br>Aşağıda sadece final cevabı değil, agent'ın adım adım ne yaptığını da göreceksin.</p>
   </header>
 
   <div class="card">
@@ -179,23 +198,79 @@
     return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
+  // Gemini'nin sık kullandığı markdown'ın küçük bir alt kümesi: başlık, liste,
+  // kalın, italik, satır içi kod. Kart white-space: pre-wrap olduğu için satır
+  // sonları olduğu gibi kalıyor; sadece işaretleri temizliyoruz.
   function formatAnswer(text) {
     return escapeHtml(text)
-      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-      .replace(/^\s*[-*] (.+)$/gm, "• $1");
+      .replace(/^\s*#{1,6}\s+(.+)$/gm, '<strong class="heading">$1</strong>')
+      .replace(/^(\s*)[-*+] (.+)$/gm, "$1• $2")
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+      .replace(/\*\*(.+?)\*\*|__(.+?)__/g, (_, a, b) => `<strong>${a ?? b}</strong>`)
+      .replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)\*(?!\w)/g, "$1<em>$2</em>")
+      .replace(/(^|[^_\w])_(?!\s)([^_\n]+?)_(?!\w)/g, "$1<em>$2</em>");
+  }
+
+  // Sunucudaki araç mesajlarını (Gemini'nin de okuduğu, teknik ayrıntılı metinler)
+  // kullanıcıya gösterilecek sade bir hale getirir. Ham metin "teknik detay"da kalır.
+  function summarizeResult(tool, args, raw) {
+    if (raw == null || raw === "") return { text: "(sonuç yok)", failed: false };
+    const pmid = args.pmid ?? "?";
+    if (raw.startsWith("PubMed araması başarısız oldu"))
+      return { text: "PubMed'e ulaşılamadı, arama yapılamadı.", failed: true };
+    if (raw.startsWith("PubMed özetleri alınamadı"))
+      return { text: "Makaleler bulundu ama başlıkları PubMed'den alınamadı.", failed: true };
+    if (raw.startsWith("İndeksleme bu ortamda yapılandırılmamış"))
+      return { text: "Bu sunucuda bilgi bankasına kaydetme özelliği kapalı.", failed: true };
+    if (tool === "index_paper" && raw.includes("indekslenemedi")) {
+      const code = raw.match(/ (\d{3}) döndürdü/)?.[1];
+      const reason = code === "401" || code === "403" ? " (yetki hatası)"
+        : code === "404" ? " (makale bulunamadı)"
+        : code ? "" : " (bilgi bankası servisine ulaşılamadı)";
+      return { text: `PMID ${pmid} bilgi bankasına kaydedilemedi${reason}.`, failed: true };
+    }
+    const chunks = raw.match(/(\d+) chunk olarak indekslendi/)?.[1];
+    if (chunks) return { text: `PMID ${pmid} bilgi bankasına kaydedildi (${chunks} parça halinde).`, failed: false };
+    if (tool === "get_abstract" && raw.includes("abstract bulunamadı"))
+      return { text: `PMID ${pmid} için özet bulunamadı (geçersiz numara olabilir ya da makalenin özeti yok).`, failed: true };
+    return { text: raw, failed: false };
+  }
+
+  // Araç çağrısını teknik olmayan bir cümleye çevirir.
+  function describeStep(tool, args, failed) {
+    const arg = (v) => `<span class="arg">${escapeHtml(String(v))}</span>`;
+    switch (tool) {
+      case "search_papers":
+        return `🔍 PubMed'de ${arg(`"${args.query ?? ""}"`)} için arama ${failed ? "yapılamadı" : "yapıldı"}` +
+          (args.max_results ? ` (en fazla ${arg(args.max_results)} sonuç)` : "");
+      case "get_abstract":
+        return `📄 PMID ${arg(args.pmid ?? "?")} makalesinin özeti ${failed ? "getirilemedi" : "getirildi"}`;
+      case "index_paper":
+        return `📥 PMID ${arg(args.pmid ?? "?")} makalesi bilgi bankasına ${failed ? "kaydedilemedi" : "kaydedildi"}`;
+      case "ping":
+        return `📡 Sunucu bağlantısı test edildi`;
+      default:
+        return `🔧 ${arg(tool)} aracı çalıştırıldı`;
+    }
   }
 
   function renderTrace(trace) {
     if (!trace || trace.length === 0) return "";
     const steps = trace
       .map((step, i) => {
-        const args = JSON.stringify(step.args ?? {});
-        const result = escapeHtml(step.result ?? "(sonuç yok)");
+        const args = step.args ?? {};
+        const summary = summarizeResult(step.tool, args, step.result);
         const stepId = `trace-result-${i}`;
-        return `<div class="trace-step">
-          <div class="call">🔧 <span class="name">${escapeHtml(step.tool)}</span>(${escapeHtml(args)})</div>
-          <div class="result" id="${stepId}">${result}</div>
-          <button class="toggle" data-target="${stepId}">tümünü göster</button>
+        const rawId = `trace-raw-${i}`;
+        const rawResult = summary.text !== step.result && step.result ? `\n\n${step.result}` : "";
+        return `<div class="trace-step${summary.failed ? " failed" : ""}">
+          <div class="call">${i + 1}. ${describeStep(step.tool, args, summary.failed)}</div>
+          <div class="result" id="${stepId}">${escapeHtml(summary.text)}</div>
+          <div class="raw" id="${rawId}">${escapeHtml(step.tool)}(${escapeHtml(JSON.stringify(args))})${escapeHtml(rawResult)}</div>
+          <div class="toggles">
+            <button class="toggle" data-target="${stepId}">tümünü göster</button>
+            <button class="toggle raw-toggle" data-target="${rawId}">teknik detay</button>
+          </div>
         </div>`;
       })
       .join("");
@@ -205,10 +280,17 @@
     </div>`;
   }
 
+  function friendlyError(status, data) {
+    if (status === 422) return "Soru okunamadı. Lütfen bir soru yazıp tekrar dene.";
+    if (data && typeof data.detail === "string") return data.detail;
+    if (status >= 502 && status <= 504) return "Sunucu şu an yanıt vermiyor. Biraz sonra tekrar dene.";
+    return `Bir şeyler ters gitti (hata kodu ${status}). Biraz sonra tekrar dene.`;
+  }
+
   async function ask(question) {
     if (!question.trim()) return;
     askBtn.disabled = true;
-    resultEl.innerHTML = `<div class="loading"><div class="spinner"></div> Agent çalışıyor — alt-process başlatılıyor, PubMed'de aranıyor... (ilk istekte sunucu da uyanıyor olabilir, 20-30 saniye sürebilir)</div>`;
+    resultEl.innerHTML = `<div class="loading"><div class="spinner"></div> Agent hazırlanıyor, PubMed'de aranıyor... (sunucu bir süredir kullanılmadıysa ilk istek 20-30 saniye sürebilir)</div>`;
 
     try {
       const response = await fetch("/ask", {
@@ -216,11 +298,11 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question }),
       });
-      const data = await response.json();
+      // Hata durumunda sunucu (ya da önündeki proxy) JSON yerine düz metin/HTML dönebilir.
+      const data = await response.json().catch(() => null);
 
-      if (!response.ok) {
-        const detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
-        resultEl.innerHTML = `<div class="answer-card error">Hata (${response.status}): ${escapeHtml(detail)}</div>`;
+      if (!response.ok || !data) {
+        resultEl.innerHTML = `<div class="answer-card error">${escapeHtml(friendlyError(response.status, data))}</div>`;
         return;
       }
 
@@ -228,12 +310,18 @@
       resultEl.querySelectorAll(".toggle").forEach((btn) => {
         btn.addEventListener("click", () => {
           const el = document.getElementById(btn.dataset.target);
+          if (btn.classList.contains("raw-toggle")) {
+            const shown = el.classList.toggle("shown");
+            btn.textContent = shown ? "teknik detayı gizle" : "teknik detay";
+            return;
+          }
           const expanded = el.classList.toggle("expanded");
           btn.textContent = expanded ? "gizle" : "tümünü göster";
         });
       });
     } catch (err) {
-      resultEl.innerHTML = `<div class="answer-card error">İstek başarısız oldu: ${escapeHtml(String(err))}</div>`;
+      console.error(err);
+      resultEl.innerHTML = `<div class="answer-card error">Sunucuya ulaşılamadı. İnternet bağlantını kontrol edip tekrar dene.</div>`;
     } finally {
       askBtn.disabled = false;
     }

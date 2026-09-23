@@ -1,15 +1,18 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from agent_client import ask_with_trace
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -49,7 +52,20 @@ class AskResponse(BaseModel):
 
 @app.post("/ask", response_model=AskResponse)
 async def ask_endpoint(request: AskRequest) -> AskResponse:
-    answer, trace = await ask_with_trace(request.question)
+    # Yakalanmayan bir hata FastAPI'de düz metin "Internal Server Error" döndürür;
+    # UI onu JSON diye parse edemeyip kullanıcıya SyntaxError gösteriyordu.
+    # Gemini kotası dolduğunda / MCP alt-process'i çöktüğünde okunur bir mesaj veriyoruz.
+    try:
+        answer, trace = await ask_with_trace(request.question)
+    except Exception:
+        logger.exception("Agent çalışırken hata oluştu")
+        raise HTTPException(
+            status_code=502,
+            detail="Agent şu an yanıt veremiyor (yapay zekâ servisine ulaşılamadı ya da kullanım kotası dolmuş olabilir). Lütfen biraz sonra tekrar deneyin.",
+        )
+    # Model sadece tool çağırıp metin üretmezse response.text None gelir.
+    if not answer:
+        answer = "Agent araçları çalıştırdı ama bir cevap metni üretmedi. Sorunuzu biraz daha açık yazıp tekrar deneyebilirsiniz."
     return AskResponse(answer=answer, trace=trace)
 
 

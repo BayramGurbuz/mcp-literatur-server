@@ -21,6 +21,22 @@ def test_ask_endpoint_returns_answer_and_trace():
     assert response.json() == {"answer": "sahte cevap", "trace": fake_trace}
 
 
+def test_ask_endpoint_returns_readable_error_when_agent_fails():
+    with patch("api.ask_with_trace", new_callable=AsyncMock, side_effect=RuntimeError("429 RESOURCE_EXHAUSTED")):
+        response = client.post("/ask", json={"question": "SSVEP nedir?"})
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert "tekrar deneyin" in detail
+    assert "RESOURCE_EXHAUSTED" not in detail
+
+
+def test_ask_endpoint_handles_empty_answer():
+    with patch("api.ask_with_trace", new_callable=AsyncMock, return_value=(None, [])):
+        response = client.post("/ask", json={"question": "SSVEP nedir?"})
+    assert response.status_code == 200
+    assert "cevap metni üretmedi" in response.json()["answer"]
+
+
 def test_ask_endpoint_rejects_missing_question():
     response = client.post("/ask", json={})
     assert response.status_code == 422
